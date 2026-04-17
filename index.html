@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<title>24MB 分割ツール（ブラウザ内・無劣化）</title>
+</head>
+<body style="font-family: sans-serif; padding: 20px;">
+
+<h2>動画・音声を 24MB 前後で分割（ブラウザ内・無劣化）</h2>
+
+<button id="loadBtn">ffmpeg を読み込む</button>
+<br><br>
+
+<input type="file" id="fileInput">
+<br><br>
+
+<label>
+  1チャンク最大サイズ（MB）:
+  <input type="number" id="maxMB" value="24" style="width: 80px;">
+</label>
+<br><br>
+
+<button id="splitBtn" disabled>分割する</button>
+
+<p id="status"></p>
+
+<ul id="result"></ul>
+
+<p style="font-size: 12px; color: #666;">
+※ 処理はすべてブラウザ内で行われ、ファイルは外部に送信されません。
+</p>
+
+<script type="module">
+import { createFFmpeg, fetchFile } from "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.6/dist/ffmpeg.min.js";
+
+const ffmpeg = createFFmpeg({ log: false });
+
+const loadBtn = document.getElementById("loadBtn");
+const splitBtn = document.getElementById("splitBtn");
+const fileInput = document.getElementById("fileInput");
+const status = document.getElementById("status");
+const result = document.getElementById("result");
+const maxMBInput = document.getElementById("maxMB");
+
+let loaded = false;
+
+loadBtn.onclick = async () => {
+  status.textContent = "ffmpeg 読み込み中…（数秒かかります）";
+  await ffmpeg.load();
+  loaded = true;
+  splitBtn.disabled = false;
+  status.textContent = "準備OK";
+};
+
+function extractDuration(stderr) {
+  const match = stderr.match(/Duration: (\d+):(\d+):(\d+\.\d+)/);
+  if (!match) return null;
+  const h = Number(match[1]);
+  const m = Number(match[2]);
+  const s = Number(match[3]);
+  return h * 3600 + m * 60 + s;
+}
+
+splitBtn.onclick = async () => {
+  const file = fileInput.files?.[0];
+  if (!file || !loaded) return;
+
+  status.textContent = "メタ情報取得中…";
+  result.innerHTML = "";
+
+  const ext = file.name.split(".").pop();
+  const inputName = `input.${ext}`;
+  ffmpeg.FS("writeFile", inputName, await fetchFile(file));
+
+  // duration 抽出
+  let stderr = "";
+  ffmpeg.setLogger(({ type, message }) => {
+    if (type === "fferr") stderr += message + "\n";
+  });
+
+  await ffmpeg.run("-i", inputName);
+  const duration = extractDuration(stderr);
+  if (!duration) {
+    status.textContent = "duration が取得できませんでした";
+    return;
+  }
+
+  const maxMB = Number(maxMBInput.value);
+  const maxBytes = maxMB * 1024 * 1024;
+  const bitrate = file.size / duration;
+  const segmentTime = maxBytes / bitrate;
+
+  status.textContent = `分割中…（1チャンク ≈ ${segmentTime.toFixed(1)} 秒）`;
+
+  const pattern = `out%03d.${ext}`;
+
+  await ffmpeg.run(
+    "-i", inputName,
+    "-c", "copy",
+    "-f", "segment",
+    "-segment_time", String(segmentTime),
+    "-reset_timestamps", "1",
+    pattern
+  );
+
+  // 出力取得
+  for (let i = 0; i < 999; i++) {
+    const name = `out${String(i).padStart(3, "0")}.${ext}`;
+    try {
+      const data = ffmpeg.FS("readFile", name);
+      const blob = new Blob([data.buffer], { type: file.type });
+      const url = URL.createObjectURL(blob);
+
+      const li = document.createElement("li");
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      a.textContent = name;
+      li.appendChild(a);
+      result.appendChild(li);
+    } catch {
+      break;
+    }
+  }
+
+  status.textContent = "完了";
+};
+</script>
+
+</body>
+</html>
